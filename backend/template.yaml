@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: DeerDash - Deer Pattern Analysis Backend
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref DetectionsTable
+        # FIX 1: Break dependency loop by using the name string directly
+        BUCKET_NAME: !Sub "deerdash-images-${AWS::AccountId}"
+
+Resources:
+  # ---------- S3 ----------
+  ImagesBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "deerdash-images-${AWS::AccountId}"
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders: ["*"]
+            AllowedMethods: [GET, PUT, POST]
+            AllowedOrigins: ["*"]
+            MaxAge: 3600
+
+  # ---------- DynamoDB (Single Table Design) ----------
+  DetectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: DeerDash
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+        - AttributeName: GSI1PK
+          AttributeType: S
+        - AttributeName: GSI1SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: GSI1
+          KeySchema:
+            - AttributeName: GSI1PK
+              KeyType: HASH
+            - AttributeName: GSI1SK
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  # ---------- Lambda Functions ----------
+  GenerateUploadUrlFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/functions/generateUploadUrl/index.handler
+      Description: Returns a presigned POST URL for S3 upload
+      Policies:
+        - S3CrudPolicy:
+            # FIX 2: Break dependency loop
+            BucketName: !Sub "deerdash-images-${AWS::AccountId}"
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /upload-url
+            Method: GET
+        Preflight:
+          Type: Api
+          Properties:
+            Path: /upload-url
+            Method: OPTIONS
+
+  ProcessImageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/functions/processImage/index.handler
+      Description: Triggered by S3 upload, runs Rekognition detection
+      Policies:
+        - S3ReadPolicy:
+            # FIX 3: Break dependency loop
+            BucketName: !Sub "deerdash-images-${AWS::AccountId}"
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DetectionsTable
+        - RekognitionDetectOnlyPolicy: {}
+      Events:
+        S3Upload:
+          Type: S3
+          Properties:
+            Bucket: !Ref ImagesBucket # This one MUST stay as !Ref for the trigger to work
+            Events: s3:ObjectCreated:*
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: uploads/
+
+  GetDetectionsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/functions/getDetections/index.handler
+      Description: Returns detection records for a user
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref DetectionsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /detections
+            Method: GET
+        Preflight:
+          Type: Api
+          Properties:
+            Path: /detections
+            Method: OPTIONS
+
+  VerifyDetectionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/functions/verifyDetection/index.handler
+      Description: Human-in-the-loop verification of a detection
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref DetectionsTable
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /detections/{id}/verify
+            Method: POST
+        Preflight:
+          Type: Api
+          Properties:
+            Path: /detections/{id}/verify
+            Method: OPTIONS
+
+Outputs:
+  ApiUrl:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+  BucketName:
+    Description: S3 bucket for trail camera images
+    Value: !Ref ImagesBucket
