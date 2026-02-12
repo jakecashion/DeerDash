@@ -66,13 +66,13 @@ export async function fetchDetections(userId: string): Promise<Detection[]> {
     throw new Error(`Failed to fetch detections (${res.status})`);
   }
 
-  const data: { detections: Detection[] } = await res.json();
-  return data.detections;
+  const data = await res.json();
+  return Array.isArray(data?.detections) ? data.detections : [];
 }
 
 /**
  * Verify or reject a detection.
- * @param sk - The full SK value, e.g. "DETECT#2024-11-15T06:30:00.000Z"
+ * @param sk - The full SK value, e.g. "DETECT#2024-11-15T06:30:00.000Z#a1b2c3d4"
  */
 export async function verifyDetection(
   sk: string,

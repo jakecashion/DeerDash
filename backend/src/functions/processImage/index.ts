@@ -71,52 +71,68 @@ async function processOne(key: string): Promise<void> {
   const captureDate = parseExifDate(Buffer.from(imageBytes));
 
   // 4. Call Rekognition (once per image)
-  const detection = await rekognition.send(
-    new DetectLabelsCommand({
-      Image: {
-        S3Object: {
-          Bucket: BUCKET_NAME,
-          Name: key,
+  let allLabels: DetectionLabel[] = [];
+  let deerLabels: DetectionLabel[] = [];
+  let topConfidence = 0;
+  let isDeer = false;
+
+  try {
+    const detection = await rekognition.send(
+      new DetectLabelsCommand({
+        Image: {
+          S3Object: {
+            Bucket: BUCKET_NAME,
+            Name: key,
+          },
         },
-      },
-      MaxLabels: 20,
-      MinConfidence: MIN_CONFIDENCE,
-    })
-  );
+        MaxLabels: 20,
+        MinConfidence: MIN_CONFIDENCE,
+      })
+    );
 
-  const allLabels: DetectionLabel[] = (detection.Labels ?? []).map(
-    (l): DetectionLabel => ({
-      name: l.Name ?? "Unknown",
-      confidence: Math.round(l.Confidence ?? 0),
-    })
-  );
+    allLabels = (detection.Labels ?? []).map(
+      (l: { Name?: string; Confidence?: number }): DetectionLabel => ({
+        name: l.Name ?? "Unknown",
+        confidence: Math.round(l.Confidence ?? 0),
+      })
+    );
 
-  // 5. Filter for deer-relevant labels
-  const deerLabels = allLabels.filter((l) =>
-    DEER_LABELS.has(l.name.toLowerCase())
-  );
+    // 5. Filter for deer-relevant labels
+    deerLabels = allLabels.filter((l) =>
+      DEER_LABELS.has(l.name.toLowerCase())
+    );
 
-  const topConfidence =
-    deerLabels.length > 0
-      ? Math.max(...deerLabels.map((l) => l.confidence))
-      : 0;
+    topConfidence =
+      deerLabels.length > 0
+        ? Math.max(...deerLabels.map((l) => l.confidence))
+        : 0;
 
-  const isDeer = deerLabels.some(
-    (l) =>
-      ["deer", "buck", "doe", "fawn", "white-tailed deer"].includes(
-        l.name.toLowerCase()
-      ) && l.confidence >= MIN_CONFIDENCE
-  );
+    isDeer = deerLabels.some(
+      (l) =>
+        ["deer", "buck", "doe", "fawn", "white-tailed deer"].includes(
+          l.name.toLowerCase()
+        ) && l.confidence >= MIN_CONFIDENCE
+    );
+  } catch (rekErr: unknown) {
+    const errName = (rekErr as { name?: string })?.name;
+    console.warn(
+      `Rekognition failed for ${key} (${errName}), saving record without labels`
+    );
+    // Continue — we still persist a record so the image isn't silently lost
+  }
 
   // 6. Persist to DynamoDB — PK is the authenticated user
   const timestamp = captureDate.toISOString();
+  // Append the first 8 chars of the UUID from the S3 key to prevent
+  // SK collisions when multiple images share the same capture timestamp
+  const uniqueSuffix = key.split("/").pop()?.split("-")[0] ?? "";
 
   await ddb.send(
     new PutCommand({
       TableName: TABLE_NAME,
       Item: {
         PK: `USER#${userId}`,
-        SK: `DETECT#${timestamp}`,
+        SK: `DETECT#${timestamp}#${uniqueSuffix}`,
         imageKey: key,
         captureDate: timestamp,
         labels: allLabels,

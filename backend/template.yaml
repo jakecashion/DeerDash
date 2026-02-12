@@ -10,8 +10,12 @@ Globals:
     Environment:
       Variables:
         TABLE_NAME: !Ref DetectionsTable
-        # FIX 1: Break dependency loop by using the name string directly
         BUCKET_NAME: !Sub "deerdash-images-${AWS::AccountId}"
+
+  Api:
+    BinaryMediaTypes:
+      - "image~1jpeg"
+      - "image~1png"
 
 Resources:
   # ---------- S3 ----------

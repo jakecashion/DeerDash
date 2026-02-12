@@ -25,7 +25,9 @@ function buildHourlyData(detections: Detection[]): HourBucket[] {
   const counts = new Array<number>(24).fill(0);
   for (const d of deerOnly) {
     const hour = new Date(d.captureDate).getHours();
-    counts[hour]++;
+    if (!Number.isNaN(hour)) {
+      counts[hour]++;
+    }
   }
 
   return counts.map((count, i) => ({
